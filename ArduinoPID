@@ -1,0 +1,154 @@
+/* Single oven digital controller for thermoregulation of small laser packages
+
+    pin3   : OUT  PWM output for the heater mosfet
+    pin2   : OUT  heater on indicator
+    pin13, 12  : OUT  lock indicator
+    pin A0 : IN   thermistor divider signal 
+    pin A1 : IN   voltage: set point for the thermostat, sets target. typically a rheostat, but could be a slow computer sweep
+    pin A2 : IN   voltage reference , for rationmetric to remove drift from the ADC
+    
+2/25/2018 : faster read implementation in the greyed out area in void setup worked,sped up the averaging loop about a factor of 4 but seriously degraded the RMS noise ..that increased over  a factor of 10...so do not use!!    
+1/3/2018: Some improvments: 
+        mode ==1 read the target temperature with the rheostat...for non computer operation
+        mode ==2 set target fixed inside code. good for once you've got it all figured out! A wee bit faster! 
+        guard (and report) against crazy ADC codes. 
+        included norming ADC reads with a reference line 
+1/3/2018: Still some digital tuning to do....no doubt about it! 
+
+*/ 
+
+int x, count, num=1000, smooth = 10, count1, tt, offset, mode, y, z,w, ref, cycles_locked;
+double temp, target, kP, dutyCycle,dutyCycle_last, error, errorint, r, kint, signal, sigma, minCycle, maxCycle, basin, scale, acceptable_noise,xx,www,yy,zz, lock_center, avgtemp; 
+
+
+void setup()
+{
+  Serial.begin(9600);
+  pinMode(3,  OUTPUT);
+  pinMode(2,  OUTPUT);  
+  pinMode(12, OUTPUT);
+  pinMode(13, OUTPUT);
+  
+ /* 
+// defines for setting and clearing register bits
+#ifndef cbi
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#endif
+#ifndef sbi
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+#endif
+
+// set prescale to 16
+sbi(ADCSRA,ADPS2) ;
+cbi(ADCSRA,ADPS1) ;
+cbi(ADCSRA,ADPS0) ;
+*/  
+  mode=2; 
+  target = 0.835;   // only needed if mode = 2, computer fixed target
+  minCycle = 0.0; 
+  maxCycle = 0.8;
+  r = 0.95; 
+  kP = 7;  
+  kint = 50; 
+  acceptable_noise = 0.01; // ratio of sigma to the signal to reject
+  scale = 255.0; 
+  offset = 0; 
+  lock_center = target-.009; 
+  basin = 0.0003;
+  count = 0; 
+  error = analogRead(A0)-target; 
+  errorint = error;  
+  cycles_locked = 0; 
+  tt=0; 
+  x = 0; 
+   
+  if (mode==1){
+    count1 = 0;
+    while (count1 < smooth)                  // First read the target device/value
+      {
+         x = x+analogRead(1);
+         count1++; 
+      }
+    target = (double)(x)/(double)(smooth); 
+    }
+}
+
+void loop()
+{
+  xx=0.0;
+  zz = 0.0;  
+  count1 = 0;
+  while (count1 < smooth)
+  {
+     y = analogRead(A0);
+     w = analogRead(A2);
+     yy= (double)y/(double)(w);   
+     xx = xx+yy;
+     zz = zz+yy*yy; 
+     count1++;
+  }  
+  signal = xx/(double)smooth; 
+  sigma = sqrt(zz/(double)smooth-signal*signal)/signal; 
+  //if(sigma < acceptable_noise){
+  error = signal-target; 
+  errorint  = errorint*r+(1.0-r)*error; 
+  avgtemp = avgtemp*r+(1.0-r)*signal; 
+  dutyCycle = -kP*error-kint*errorint;
+  //} 
+  //else {
+  //  dutyCycle = dutyCycle_last; 
+  //} 
+  if (dutyCycle<minCycle){   
+      dutyCycle=minCycle;
+  } 
+  if (dutyCycle>maxCycle){
+      dutyCycle=maxCycle; 
+  }
+  if(dutyCycle==minCycle){                 // active heating lED indicator
+    digitalWrite(2,LOW); 
+  } 
+  else{
+    digitalWrite(2,HIGH); 
+  } 
+  analogWrite(3,offset+(int)(scale*dutyCycle));  
+  if(count == num)                         // reporting section every 'num' times through
+  {
+    tt++; 
+  if(mode==1){
+    x = 0; 
+    count1 = 0; 
+    while (count1 < smooth)                  // 
+      {
+         x = x+analogRead(1);                   // read the setpoint target voltage
+         count1++; 
+      }
+    target = (double)(x)/(double)(ref);
+  }
+      Serial.print(tt,1);                    //write state to console
+      Serial.print("  ");
+      Serial.print(signal,6);                // current temperature
+      Serial.print("  ");
+      Serial.print(lock_center,4);                // target temperature
+      Serial.print("  ");
+      Serial.print(dutyCycle,3);             // dutycycle
+      Serial.print("  ");
+      Serial.print(sigma,4);                 // ADC variance
+      Serial.print("  ");
+      Serial.print(avgtemp,4);
+      Serial.print("  "); 
+      Serial.println(cycles_locked,1);
+      count = 0;
+  if(abs(signal-lock_center)<basin){             // lock light indicator
+   digitalWrite(13,HIGH); 
+   digitalWrite(12,HIGH);  
+   cycles_locked++; 
+  }
+  else{
+   digitalWrite(13,LOW); 
+   digitalWrite(12,LOW);
+   cycles_locked = 0; 
+  }
+  }
+  count++;
+  dutyCycle_last = dutyCycle;  
+}
